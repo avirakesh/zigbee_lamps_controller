@@ -8,3 +8,5 @@ sdkconfig.old
 # workspace files
 .vscode
 components
+managed_components
+dependencies.lock

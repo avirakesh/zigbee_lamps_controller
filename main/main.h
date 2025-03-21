@@ -2,7 +2,10 @@
 #define __ZIGBEE_LAMPS_CONTROLLER_MAIN_H__
 
 #include <stdio.h>
+#include "esp_log.h"
 #include "esp_system.h"
+
+#define _MAIN_H_TAG_ "main"
 
 typedef enum { CONTINUE, TERMINATE, RESTART } LoopResult;
 
@@ -16,14 +19,14 @@ LoopResult loop();
  * @return void
  */
 void app_main(void) {
-  printf("Calling setup function\n");
+  ESP_LOGI(_MAIN_H_TAG_, "Calling setup function");
 
   if (!setup()) {
-    printf("Setup failed, Exiting.\n");
+    ESP_LOGI(_MAIN_H_TAG_, "Setup failed, Exiting.");
     return;
   }
 
-  printf("Setup successful, calling loop function\n");
+  ESP_LOGI(_MAIN_H_TAG_, "Setup successful, calling loop function");
   LoopResult ret;
 
   do {
@@ -31,11 +34,12 @@ void app_main(void) {
   } while (ret == CONTINUE);
 
   if (ret == TERMINATE) {
-    printf("Loop signalled exit. Exiting.\n");
+    ESP_LOGI(_MAIN_H_TAG_, "Loop signalled exit. Exiting.");
   } else {
-    printf("Loop Signalled restart. Restarting\n");
+    ESP_LOGI(_MAIN_H_TAG_, "Loop Signalled restart. Restarting.");
     esp_restart();
   }
 }
 
+#undef _MAIN_H_TAG_
 #endif  // __ZIGBEE_LAMPS_CONTROLLER_MAIN_H__
