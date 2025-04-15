@@ -5,41 +5,39 @@
 #include "esp_log.h"
 #include "esp_system.h"
 
-#define _MAIN_H_TAG_ "main"
+#include "esp_zigbee_core.h"
 
-typedef enum { CONTINUE, TERMINATE, RESTART } LoopResult;
+#define INSTALLCODE_POLICY_ENABLE false
+#define MAX_CHILDREN 10
 
-// Gives us an Arduino like framework where we can use setup and loop functions
-// Both function returns true to continue, and false to stop.
-bool setup();
-LoopResult loop();
+#define HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_NUM 3
+#define HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_START 10
+
+#define ESP_ZB_PRIMARY_CHANNEL_MASK 0x07FFF800
 
 /**
- * Main application entry point, simply delegates to setup and loop functions.
- * @return void
+ * optional basic manufacturer information
+ * Taken from:
+ * https://github.com/espressif/esp-zigbee-sdk/blob/main/examples/common/zcl_utility/include/zcl_utility.h
  */
-void app_main(void) {
-  ESP_LOGI(_MAIN_H_TAG_, "Calling setup function");
+typedef struct zcl_basic_manufacturer_info_s {
+  char* manufacturer_name;
+  char* model_identifier;
+} zcl_basic_manufacturer_info_t;
 
-  if (!setup()) {
-    ESP_LOGI(_MAIN_H_TAG_, "Setup failed, Exiting.");
-    return;
-  }
+/**
+ * @brief Adds manufacturer information to the ZCL basic cluster of endpoint
+ *
+ * @param[in] ep_list The pointer to the endpoint list with @p endpoint_id
+ * @param[in] endpoint_id The endpoint identifier indicating where the ZCL basic
+ * cluster resides
+ * @param[in] info The pointer to the basic manufacturer information
+ * @return
+ *      - ESP_OK: On success
+ *      - ESP_ERR_INVALID_ARG: Invalid argument
+ */
+esp_err_t esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list_t* ep_list,
+                                                         uint8_t endpoint_id,
+                                                         zcl_basic_manufacturer_info_t* info);
 
-  ESP_LOGI(_MAIN_H_TAG_, "Setup successful, calling loop function");
-  LoopResult ret;
-
-  do {
-    ret = loop();
-  } while (ret == CONTINUE);
-
-  if (ret == TERMINATE) {
-    ESP_LOGI(_MAIN_H_TAG_, "Loop signalled exit. Exiting.");
-  } else {
-    ESP_LOGI(_MAIN_H_TAG_, "Loop Signalled restart. Restarting.");
-    esp_restart();
-  }
-}
-
-#undef _MAIN_H_TAG_
 #endif  // __ZIGBEE_LAMPS_CONTROLLER_MAIN_H__
