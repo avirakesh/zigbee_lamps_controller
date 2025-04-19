@@ -7,13 +7,16 @@
 #include "main.h"
 #include <inttypes.h>
 #include <stdio.h>
+#include <memory>
+#include <vector>
 #include "esp_check.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "ha/esp_zigbee_ha_standard.h"
-#include "led_strip.h"
+#include "light.h"
+#include "light_controller.h"
 #include "nvs_flash.h"
 #include "sdkconfig.h"
 #include "zcl/esp_zigbee_zcl_common.h"
@@ -29,21 +32,53 @@ typedef struct light_bulb_device_params_s {
   uint16_t short_addr;
 } light_bulb_device_params_t;
 
-static esp_err_t deferred_driver_init(void) {
-  // This method initializes the internal GPIO pins as necessary.
-  static bool is_inited = false;
-  //   if (!is_inited) {
-  //     ESP_RETURN_ON_FALSE(
-  //         switch_driver_init(button_func_pair, PAIR_SIZE(button_func_pair),
-  //                            zb_buttons_handler),
-  //         ESP_FAIL, TAG, "Failed to initialize switch driver");
-  //     is_inited = true;
-  //   }
-  //   return is_inited ? ESP_OK : ESP_FAIL;
+std::unique_ptr<LightsController> lights_controller = std::make_unique<LightsController>();
+
+void lights_controller_task_entry(void*) {
+  lights_controller->lights_task_main_loop();
+}
+
+void report_light_states(void* ep_cast_as_ptr) {
+  uint8_t ep = static_cast<uint8_t>(reinterpret_cast<uintptr_t>(ep_cast_as_ptr));
+
+  std::optional<LightState> state = lights_controller->get_state_to_report(ep);
+  if (!state.has_value()) {
+    ESP_LOGI(TAG, "%s: No need to report state for endpoint %d", __FUNCTION__, ep);
+    return;
+  }
+
+  bool on_off = state->power_state == POWER_ON;
+  uint8_t level = static_cast<uint8_t>(state->brightness);
+  uint16_t color_temp = static_cast<uint16_t>(state->color_temperature);
+
+  ESP_LOGI(TAG, "%s: Reported State: { .power=%d, .color_temperature=%d, .brightness=%d }",
+           __FUNCTION__, state->power_state, state->color_temperature, state->brightness);
+
+  esp_zb_zcl_set_attribute_val(ep, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                               ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID, &on_off, false);
+  esp_zb_zcl_set_attribute_val(ep, ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL,
+                               ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                               ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_CURRENT_LEVEL_ID, &level, false);
+  esp_zb_zcl_set_attribute_val(
+      ep, ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+      ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMPERATURE_ID, &color_temp, false);
+}
+
+esp_err_t deferred_driver_init(void) {
+  std::vector<uint8_t> endpoints;
+  endpoints.reserve(ZIGBEE_LAMPS_CONTROLLER_NUM_LIGHTS);
+  for (uint8_t i = 0; i < ZIGBEE_LAMPS_CONTROLLER_NUM_LIGHTS; i++) {
+    endpoints.push_back(i + ZIGBEE_LAMPS_CONTROLLER_ENDPOINT_START);
+  }
+  ESP_RETURN_ON_ERROR(lights_controller->initialize(endpoints), TAG,
+                      "%s: Failed to initialized LightsController.", __FUNCTION__);
+
+  xTaskCreate(lights_controller_task_entry, "LightsControllerTask", 4096, NULL, 5, NULL);
+
   return ESP_OK;
 }
 
-static void bdb_start_top_level_commissioning_cb(uint8_t mode_mask) {
+void bdb_start_top_level_commissioning_cb(uint8_t mode_mask) {
   ESP_RETURN_ON_FALSE(esp_zb_bdb_start_top_level_commissioning(mode_mask) == ESP_OK, , TAG,
                       "Failed to start Zigbee bdb commissioning");
 }
@@ -132,29 +167,93 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t* signal_struct) {
   }
 }
 
-static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t* message) {
-  esp_err_t ret = ESP_OK;
-  bool light_state = 0;
-  uint8_t light_level = 0;
-  uint16_t light_color_x = 0;
-  uint16_t light_color_y = 0;
+esp_err_t zb_on_off_control_attribute_handler(uint8_t ep, const esp_zb_zcl_attribute_t& attr) {
+  uint16_t attribute_id = attr.id;
 
-  ESP_RETURN_ON_FALSE(message, ESP_FAIL, TAG, "%s: Empty message", __FUNCTION__);
-  ESP_RETURN_ON_FALSE(message->info.status == ESP_ZB_ZCL_STATUS_SUCCESS, ESP_ERR_INVALID_ARG, TAG,
-                      "%s: Received message: error status(%d)", __FUNCTION__, message->info.status);
-  ESP_LOGI(TAG, "%s: Received message: endpoint(%d), cluster(0x%x), attribute(0x%x), data size(%d)",
-           __FUNCTION__, message->info.dst_endpoint, message->info.cluster, message->attribute.id,
-           message->attribute.data.size);
+  ESP_RETURN_ON_FALSE(attribute_id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID &&
+                          attr.data.type == ESP_ZB_ZCL_ATTR_TYPE_BOOL,
+                      ESP_OK, TAG,
+                      "Unhandled ON_OFF_CONTROL attribute: 0x%x of type 0x%x. Ignoring.",
+                      attribute_id, attr.data.type);
+
+  bool new_state = *static_cast<bool*>(attr.data.value);
+  ESP_LOGI(TAG, "%s: New on off state: %d", __FUNCTION__, new_state);
+  lights_controller->update_on_off_state(ep, new_state);
+  esp_zb_scheduler_user_alarm(report_light_states, reinterpret_cast<void*>(ep), 100);
   return ESP_OK;
 }
 
-static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
-                                   const void* message) {
+esp_err_t zb_level_control_attribute_handler(uint8_t ep, const esp_zb_zcl_attribute_t& attr) {
+  uint16_t attribute_id = attr.id;
+  ESP_RETURN_ON_FALSE(attribute_id == ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_CURRENT_LEVEL_ID &&
+                          attr.data.type == ESP_ZB_ZCL_ATTR_TYPE_U8,
+                      ESP_OK, TAG,
+                      "Unhandled LEVEL_CONTROL attribute: 0x%x of type 0x%x. Ignoring.",
+                      attribute_id, attr.data.type);
+
+  uint8_t new_level = *static_cast<uint8_t*>(attr.data.value);
+  ESP_LOGI(TAG, "%s: New level state: %d", __FUNCTION__, new_level);
+  lights_controller->update_brightness(ep, new_level);
+  esp_zb_scheduler_user_alarm(report_light_states, reinterpret_cast<void*>(ep), 100);
+  return ESP_OK;
+}
+
+esp_err_t zb_color_control_attribute_handler(uint8_t ep, const esp_zb_zcl_attribute_t& attr) {
+  uint16_t attribute_id = attr.id;
+
+  ESP_RETURN_ON_FALSE(attribute_id == ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMPERATURE_ID &&
+                          attr.data.type == ESP_ZB_ZCL_ATTR_TYPE_U16,
+                      ESP_OK, TAG,
+                      "Unhandled COLOR_CONTROL attribute: 0x%x of type 0x%x. Ignoring.",
+                      attribute_id, attr.data.type);
+
+  uint16_t new_temp = *static_cast<uint16_t*>(attr.data.value);
+  ESP_LOGI(TAG, "%s: Requested color temperature: %d", __FUNCTION__, new_temp);
+  lights_controller->update_color_temperature(ep, new_temp);
+  esp_zb_scheduler_user_alarm(report_light_states, reinterpret_cast<void*>(ep), 100);
+
+  return ESP_OK;
+}
+
+esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t* message) {
+  ESP_RETURN_ON_FALSE(message, ESP_FAIL, TAG, "%s: Empty message", __FUNCTION__);
+  ESP_RETURN_ON_FALSE(message->info.status == ESP_ZB_ZCL_STATUS_SUCCESS, ESP_ERR_INVALID_ARG, TAG,
+                      "%s: Received message: error status(%d)", __FUNCTION__, message->info.status);
+
+  uint16_t cluster_id = message->info.cluster;
+
+  switch (cluster_id) {
+    case ESP_ZB_ZCL_CLUSTER_ID_ON_OFF: {
+      return zb_on_off_control_attribute_handler(message->info.dst_endpoint, message->attribute);
+    }; break;
+    case ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL: {
+      return zb_level_control_attribute_handler(message->info.dst_endpoint, message->attribute);
+    }; break;
+    case ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL: {
+      return zb_color_control_attribute_handler(message->info.dst_endpoint, message->attribute);
+    }; break;
+    default: {
+      ESP_LOGI(TAG,
+               "%s: Received message: endpoint(%d), cluster(0x%x), attribute(0x%x), data size(%d)",
+               __FUNCTION__, message->info.dst_endpoint, message->info.cluster,
+               message->attribute.id, message->attribute.data.size);
+      ESP_LOGW(TAG, "%s: Unhandled Cluster ID: %d", __FUNCTION__, cluster_id);
+      return ESP_OK;
+    }; break;
+  }
+}
+
+esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id, const void* message) {
   esp_err_t ret = ESP_OK;
   switch (callback_id) {
     case ESP_ZB_CORE_SET_ATTR_VALUE_CB_ID:
       ret = zb_attribute_handler((esp_zb_zcl_set_attr_value_message_t*)message);
       break;
+    case ESP_ZB_CORE_CMD_DEFAULT_RESP_CB_ID: {
+      const esp_zb_zcl_cmd_default_resp_message_t* resp =
+          static_cast<const esp_zb_zcl_cmd_default_resp_message_t*>(message);
+      ESP_LOGW(TAG, "%s: CMD_DEFAULT_RESP: Status: 0x%x", __FUNCTION__, resp->status_code);
+    }; break;
     default:
       ESP_LOGW(TAG, "%s: Receive Zigbee action(0x%x) callback", __FUNCTION__, callback_id);
       break;
@@ -191,7 +290,7 @@ esp_zb_ep_list_t* create_ep_list() {
           },
       .level_cfg =
           {
-              .current_level = 2,
+              .current_level = 255,
           },
       .color_cfg =
           {
@@ -205,9 +304,9 @@ esp_zb_ep_list_t* create_ep_list() {
   };
 
   esp_zb_ep_list_t* ep_head = esp_zb_ep_list_create();
-  for (uint8_t i = 0; i < HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_NUM; i++) {
+  for (uint8_t i = 0; i < ZIGBEE_LAMPS_CONTROLLER_NUM_LIGHTS; i++) {
     esp_zb_endpoint_config_t ep_config = {
-        .endpoint = static_cast<uint8_t>(i + HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_START),
+        .endpoint = static_cast<uint8_t>(i + ZIGBEE_LAMPS_CONTROLLER_ENDPOINT_START),
         .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
         .app_device_id = ESP_ZB_HA_COLOR_DIMMABLE_LIGHT_DEVICE_ID,
         .app_device_version = 0};
@@ -216,14 +315,12 @@ esp_zb_ep_list_t* create_ep_list() {
       esp_zb_attribute_list_t* attr_list = esp_zb_cluster_list_get_cluster(
           cluster_list, ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
-      uint16_t curr_temp = 370;
-      uint16_t min_temp = 200;
-      uint16_t max_temp = 370;
+      uint16_t curr_temp = TEMPERATURE_3000K_MIRED;
+      uint16_t min_temp = TEMPERATURE_5000K_MIRED;
+      uint16_t max_temp = TEMPERATURE_3000K_MIRED;
 
-      esp_zb_cluster_add_attr(attr_list, ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
-                              ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMPERATURE_ID,
-                              ESP_ZB_ZCL_ATTR_TYPE_U16, ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE,
-                              &curr_temp);
+      esp_zb_color_control_cluster_add_attr(
+          attr_list, ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMPERATURE_ID, &curr_temp);
       esp_zb_color_control_cluster_add_attr(
           attr_list, ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMP_PHYSICAL_MIN_MIREDS_ID, &min_temp);
       esp_zb_color_control_cluster_add_attr(
@@ -233,8 +330,8 @@ esp_zb_ep_list_t* create_ep_list() {
       esp_zb_attribute_list_t* attr_list = esp_zb_cluster_list_get_cluster(
           cluster_list, ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
-      uint16_t min_level = 0;
-      uint16_t max_level = 2;
+      uint16_t min_level = BRIGHTNESS_STATE_DIM;
+      uint16_t max_level = BRIGHTNESS_STATE_BRIGHT;
 
       esp_zb_level_cluster_add_attr(attr_list, ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_MIN_LEVEL_ID,
                                     &min_level);
@@ -247,9 +344,8 @@ esp_zb_ep_list_t* create_ep_list() {
   return ep_head;
 }
 
-static void esp_zcl_utility_add_ep_list_basic_manufacturer_info(
-    esp_zb_ep_list_t* ep_list,
-    zcl_basic_manufacturer_info_t* info) {
+void esp_zcl_utility_add_ep_list_basic_manufacturer_info(esp_zb_ep_list_t* ep_list,
+                                                         zcl_basic_manufacturer_info_t* info) {
   for (esp_zb_ep_list_t* ep = ep_list; ep != nullptr; ep = ep->next) {
     uint8_t ep_id = ep->endpoint.ep_id;
     if (ep_id == 0) {
@@ -294,17 +390,18 @@ esp_err_t esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list_t* ep_li
   return ret;
 }
 
-void esp_zb_task(void* pv_parameters) {
+void esp_zb_task(void*) {
   ESP_LOGI(TAG, "%s: Starting Zigbee task", __FUNCTION__);
 
   esp_zb_cfg_t zb_network_config = {.esp_zb_role = ESP_ZB_DEVICE_TYPE_ROUTER,
                                     .install_code_policy = INSTALLCODE_POLICY_ENABLE,
                                     .nwk_cfg = {.zczr_cfg = {.max_children = MAX_CHILDREN}}};
 
-  zcl_basic_manufacturer_info_t manufacturer_info = {.manufacturer_name =
-                                                         "\x09"
-                                                         "HighOnH2O",
-                                                     .model_identifier = "\x07" CONFIG_IDF_TARGET};
+  static char manufacturer_name[] = "\x09HighOnH2O";
+  static char model_identifier[] = "\x07" CONFIG_IDF_TARGET;
+
+  zcl_basic_manufacturer_info_t manufacturer_info = {.manufacturer_name = manufacturer_name,
+                                                     .model_identifier = model_identifier};
 
   esp_zb_init(&zb_network_config);
   esp_zb_ep_list_t* ep_list = create_ep_list();
@@ -312,6 +409,7 @@ void esp_zb_task(void* pv_parameters) {
 
   esp_zb_device_register(ep_list);
   esp_zb_core_action_handler_register(zb_action_handler);
+
   esp_zb_set_primary_network_channel_set(ESP_ZB_PRIMARY_CHANNEL_MASK);
 
   ESP_ERROR_CHECK(esp_zb_start(false));
