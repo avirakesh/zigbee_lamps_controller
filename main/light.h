@@ -9,13 +9,19 @@
 #include "freertos/semphr.h"
 
 #define ZIGBEE_LAMPS_CONTROLLER_NUM_LIGHTS 3
+#define NUM_COLOR_TEMPERATURES 3
+
+#define RELAY_SIMPLE_PRESS_TIME_MS 300
+#define RELAY_CLEAR_TIME_MS 150
+
+#define BRIGHTNESS_RELAY_PRESS_TIME_MS 5000
 
 typedef enum { POWER_OFF, POWER_ON } Power;
 typedef enum {
   TEMPERATURE_3000K_MIRED = 333,
   TEMPERATURE_4000K_MIRED = 267,
   TEMPERATURE_5000K_MIRED = 200
-} Temperature;
+} ColorTemperature;
 
 typedef enum {
   BRIGHTNESS_STATE_DIM = 10,
@@ -24,7 +30,7 @@ typedef enum {
 
 typedef struct LightState {
   Power power_state;
-  Temperature color_temperature;
+  ColorTemperature color_temperature;
   Brightness brightness;
 
   bool operator==(const struct LightState& other) const {
@@ -34,10 +40,10 @@ typedef struct LightState {
 } LightState;
 
 typedef struct {
-  uint8_t power;
-  uint8_t color_temperature;
-  uint8_t brightness_up;
-  uint8_t brightness_down;
+  gpio_num_t power;
+  gpio_num_t color_temperature;
+  gpio_num_t brightness_up;
+  gpio_num_t brightness_down;
 } ControlPins;
 
 const ControlPins LIGHT_PINS[ZIGBEE_LAMPS_CONTROLLER_NUM_LIGHTS] = {
@@ -72,6 +78,20 @@ class Light {
   uint8_t modified_count = 0;  // Incremented whenever there is an attempt to modify target_state
                                // Overflow is fine as only equality is checked.
 
+  int32_t color_temperature_position(ColorTemperature color_temperature);
+
+  int32_t number_of_steps_to_target_color_temp(ColorTemperature from_temp,
+                                               ColorTemperature to_temp);
+
+  void transition_to_color_temperature(ColorTemperature from_color_temp,
+                                       ColorTemperature to_color_temp);
+  void transition_to_brightness_level(Brightness from_brightness, Brightness to_brightness);
+
+  void press_power();
+  void press_color_temperature();
+  void press_brightness_up(uint64_t duration_ms);
+  void press_brightness_down(uint64_t duration_ms);
+
  public:
   SemaphoreHandle_t mutex_handle;  // Mutex protects read/write of target_state and modified_count.
 
@@ -85,17 +105,20 @@ class Light {
                     .color_temperature = TEMPERATURE_3000K_MIRED,
                     .brightness = BRIGHTNESS_STATE_BRIGHT};
   }
+
+  esp_err_t initialize_gpio();
+
   void transition_to_target_state();
 
   void update_target_power_state(Power on_off);
   void update_target_brightness(Brightness brightness);
-  void update_target_temperature(Temperature color_temperature);
+  void update_target_color_temperature(ColorTemperature color_temperature);
 
   /*
    * Returns the target state and modified_count if the modified_count has changed since the last
    * call.
    */
-  std::optional<std::pair<uint8_t, LightState>> get_state_and_modified_count_if_newer(
+  std::optional<std::pair<uint8_t, LightState>> get_modified_count_and_state_if_newer(
       uint8_t prev_modified_count);
 };
 

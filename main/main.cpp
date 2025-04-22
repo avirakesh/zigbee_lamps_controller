@@ -21,7 +21,7 @@
 #include "sdkconfig.h"
 #include "zcl/esp_zigbee_zcl_common.h"
 
-#define LOG_LOCAL_LEVEL ESP_LOG_INFO
+#define LOG_LOCAL_LEVEL ESP_LOG_DEBUG
 #define TAG "main"
 
 #define HA_ONOFF_SWITCH_ENDPOINT 1 /* esp light switch device endpoint */
@@ -72,6 +72,9 @@ esp_err_t deferred_driver_init(void) {
   }
   ESP_RETURN_ON_ERROR(lights_controller->initialize(endpoints), TAG,
                       "%s: Failed to initialized LightsController.", __FUNCTION__);
+  for (uint8_t ep : endpoints) {
+    esp_zb_scheduler_user_alarm(report_light_states, reinterpret_cast<void*>(ep), 1000);
+  }
 
   xTaskCreate(lights_controller_task_entry, "LightsControllerTask", 4096, NULL, 5, NULL);
 
@@ -233,7 +236,7 @@ esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t* messag
       return zb_color_control_attribute_handler(message->info.dst_endpoint, message->attribute);
     }; break;
     default: {
-      ESP_LOGI(TAG,
+      ESP_LOGV(TAG,
                "%s: Received message: endpoint(%d), cluster(0x%x), attribute(0x%x), data size(%d)",
                __FUNCTION__, message->info.dst_endpoint, message->info.cluster,
                message->attribute.id, message->attribute.data.size);
@@ -255,7 +258,7 @@ esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id, const 
       ESP_LOGW(TAG, "%s: CMD_DEFAULT_RESP: Status: 0x%x", __FUNCTION__, resp->status_code);
     }; break;
     default:
-      ESP_LOGW(TAG, "%s: Receive Zigbee action(0x%x) callback", __FUNCTION__, callback_id);
+      ESP_LOGI(TAG, "%s: Receive Zigbee action(0x%x) callback", __FUNCTION__, callback_id);
       break;
   }
   return ret;
@@ -286,7 +289,7 @@ esp_zb_ep_list_t* create_ep_list() {
           },
       .on_off_cfg =
           {
-              .on_off = ESP_ZB_ZCL_ON_OFF_ON_OFF_DEFAULT_VALUE,
+              .on_off = true,
           },
       .level_cfg =
           {
@@ -332,11 +335,14 @@ esp_zb_ep_list_t* create_ep_list() {
 
       uint16_t min_level = BRIGHTNESS_STATE_DIM;
       uint16_t max_level = BRIGHTNESS_STATE_BRIGHT;
+      uint8_t on_level = 0xff;
 
       esp_zb_level_cluster_add_attr(attr_list, ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_MIN_LEVEL_ID,
                                     &min_level);
       esp_zb_level_cluster_add_attr(attr_list, ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_MAX_LEVEL_ID,
                                     &max_level);
+      esp_zb_level_cluster_add_attr(attr_list, ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_ON_LEVEL_ID,
+                                    &on_level);
     }
 
     esp_zb_ep_list_add_ep(ep_head, cluster_list, ep_config);

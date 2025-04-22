@@ -13,28 +13,17 @@ esp_err_t LightsController::initialize(const std::vector<uint8_t>& endpoints) {
     uint8_t ep = endpoints[i];
     ControlPins control_pins = LIGHT_PINS[i];
 
-    gpio_config_t cfg = {
-        .pin_bit_mask = (1ULL << control_pins.power) | (1ULL << control_pins.color_temperature) |
-                        (1ULL << control_pins.brightness_up) |
-                        (1ULL << control_pins.brightness_down),
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-
-    ESP_RETURN_ON_ERROR(gpio_config(&cfg), TAG, "%s: Failed to configure GPIO pins for endpoint %d",
-                        __FUNCTION__, ep);
-
     std::shared_ptr light = std::make_shared<Light>(control_pins);
     if (light->mutex_handle == NULL) {
       ESP_LOGE(TAG, "%s: Failed to initialize mutex for light ep: %d", __FUNCTION__, ep);
       return ESP_ERR_NO_MEM;
     }
 
+    ESP_RETURN_ON_ERROR(light->initialize_gpio(), TAG, "Failed to initialize light for ep: %d", ep);
+
     ep_to_light[ep] = light;
     ep_to_reported_modified_count[ep] = 255;  // Ensures that the first call to
-                                              // light->get_state_and_modified_count_if_newer()
+                                              // light->get_modified_count_and_state_if_newer()
                                               // will return the initial state
   }
 
@@ -56,11 +45,13 @@ void LightsController::lights_task_main_loop() {
   ESP_LOGI(TAG, "%s: Starting Lights Task Main Loop", __FUNCTION__);
 
   while (true) {
-    // Don't care why the task woke up, attempt to trasition all lights to the
-    // target state.
     xSemaphoreTake(signal_sem_handle, portMAX_DELAY);
 
+    // Transition all lights to their target state
     for (auto& [ep, light] : ep_to_light) {
+      // Wait 150ms to accumulate any other state changes as ON/OFF and
+      // brightness changes seem to come back to back.
+      vTaskDelay(pdMS_TO_TICKS(300));
       light->transition_to_target_state();
     }
   }
@@ -105,7 +96,7 @@ void LightsController::update_color_temperature(uint8_t ep, uint16_t color_tempe
                      abs(req_temp - TEMPERATURE_4000K_MIRED),
                      abs(req_temp - TEMPERATURE_5000K_MIRED)};
 
-  Temperature new_temp = TEMPERATURE_5000K_MIRED;
+  ColorTemperature new_temp = TEMPERATURE_5000K_MIRED;
   if (diffs[0] < diffs[1] && diffs[0] < diffs[2]) {
     new_temp = TEMPERATURE_3000K_MIRED;
   } else if (diffs[1] < diffs[0] && diffs[1] < diffs[2]) {
@@ -114,7 +105,7 @@ void LightsController::update_color_temperature(uint8_t ep, uint16_t color_tempe
     new_temp = TEMPERATURE_5000K_MIRED;
   }
 
-  itr->second->update_target_temperature(new_temp);
+  itr->second->update_target_color_temperature(new_temp);
   xSemaphoreGive(signal_sem_handle);
 }
 
@@ -128,7 +119,7 @@ std::optional<LightState> LightsController::get_state_to_report(uint8_t ep) {
   uint8_t reported_count = reported_count_itr->second;
 
   std::optional<std::pair<uint8_t, LightState>> reporting_pair =
-      light_itr->second->get_state_and_modified_count_if_newer(reported_count);
+      light_itr->second->get_modified_count_and_state_if_newer(reported_count);
 
   if (!reporting_pair.has_value()) {
     return std::nullopt;
