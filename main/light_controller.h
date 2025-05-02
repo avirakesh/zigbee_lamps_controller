@@ -15,12 +15,12 @@ class LightsController {
  public:
   LightsController() {};
 
-  esp_err_t initialize(const std::vector<uint8_t>& endpoints);
+  esp_err_t initialize(const std::array<uint8_t, ZIGBEE_LAMPS_CONTROLLER_NUM_LIGHTS>& endpoints);
   void lights_task_main_loop();
 
   void update_on_off_state(uint8_t ep, bool on_off);
   /*
-   *This will update the brightness to the closest value that is within the range of supported
+   * This will update the brightness to the closest value that is within the range of supported
    * brightnesses.
    *
    * get_state_to_report() must be called to get the brightness that was set.

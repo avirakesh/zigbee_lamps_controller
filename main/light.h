@@ -25,7 +25,7 @@ typedef enum {
 
 typedef enum {
   BRIGHTNESS_STATE_DIM = 10,
-  BRIGHTNESS_STATE_BRIGHT = 255,
+  BRIGHTNESS_STATE_BRIGHT = 254,
 } Brightness;
 
 typedef struct LightState {

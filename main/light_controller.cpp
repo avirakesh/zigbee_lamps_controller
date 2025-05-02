@@ -6,9 +6,8 @@
 
 #define TAG "LightsController"
 
-esp_err_t LightsController::initialize(const std::vector<uint8_t>& endpoints) {
-  assert(endpoints.size() == ZIGBEE_LAMPS_CONTROLLER_NUM_LIGHTS);
-
+esp_err_t LightsController::initialize(
+    const std::array<uint8_t, ZIGBEE_LAMPS_CONTROLLER_NUM_LIGHTS>& endpoints) {
   for (uint32_t i = 0; i < endpoints.size(); i++) {
     uint8_t ep = endpoints[i];
     ControlPins control_pins = LIGHT_PINS[i];
