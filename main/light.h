@@ -17,6 +17,10 @@
 #define BRIGHTNESS_RELAY_PRESS_TIME_MS 5000
 
 typedef enum { POWER_OFF, POWER_ON } Power;
+
+/**
+ * Mired is defined as 1'000'000 / color_temp_in_kelvin
+ */
 typedef enum {
   TEMPERATURE_3000K_MIRED = 333,
   TEMPERATURE_4000K_MIRED = 267,
@@ -66,17 +70,29 @@ const ControlPins LIGHT_PINS[ZIGBEE_LAMPS_CONTROLLER_NUM_LIGHTS] = {
         .brightness_down = GPIO_NUM_20,
     }};
 
+/**
+ * This class contains information and logic around controlling a single light. There are two tasks
+ * that access a light: (1) zigbee task to update the target state, and (2) lights controller tasks
+ * to actually change physical state of the light. So care must be taken when accessing data
+ * structures.
+ */
 class Light {
  private:
-  ControlPins control_pins;
-  LightState curr_state;  // only accessed by LightsControllerTask
+  ControlPins control_pins;  // readonly
 
+  LightState curr_state;  // The actual current physical state of the light -- only accessed by
+                          // LightsControllerTask
+
+  /**
+   * Updates the physical state of the light (tracked by curr_state) to match new_state.
+   */
   void update_curr_state_to(const LightState& new_state);
 
-  // Accesed by zigbee task and LightsControllerTask. Protected by mutex_handle
-  LightState target_state;
+  LightState target_state;  // The state that zigbee wants the light to be in. Accesed by both: the
+                            // zigbee task, and the LightsController Task. Protected by mutex_handle
   uint8_t modified_count = 0;  // Incremented whenever there is an attempt to modify target_state
-                               // Overflow is fine as only equality is checked.
+                               // Overflow is fine as only equality is checked. Protected by
+                               // mutex_handle
 
   int32_t color_temperature_position(ColorTemperature color_temperature);
 
@@ -85,11 +101,16 @@ class Light {
 
   void transition_to_color_temperature(ColorTemperature from_color_temp,
                                        ColorTemperature to_color_temp);
+
   void transition_to_brightness_level(Brightness from_brightness, Brightness to_brightness);
 
+  // "Presses" the power button, by toggling GPIO state for a short duration.
   void press_power();
+  // "Presses" the color temperature button, by toggling GPIO state for a short duration.
   void press_color_temperature();
+  // "Presses" the brightness up button, by toggling GPIO state for the specified duration.
   void press_brightness_up(uint64_t duration_ms);
+  // "Presses" the brightness down button, by toggling GPIO state for the specified duration.
   void press_brightness_down(uint64_t duration_ms);
 
  public:
@@ -106,23 +127,56 @@ class Light {
                     .brightness = BRIGHTNESS_STATE_BRIGHT};
   }
 
+  /**
+   * Called to set up the GPIO pins for the light.
+   * @return ESP_OK if successful, otherwise an error code.
+   */
   esp_err_t initialize_gpio();
 
+  /**
+   * Changes the physical state of the light to match the tracked "target_state". This function
+   * should only be called by the lights controller task when it wants to change the physical state
+   * of the light.
+   */
   void transition_to_target_state();
 
+  /**
+   * Updates the target power state of the light. Note that this does not change the physical
+   * state of the light. Physical state will be updated when transition_to_target_state function is
+   * called.
+   *
+   * Must only be called by the zigbee task.
+   */
   void update_target_power_state(Power on_off);
+
+  /**
+   * Updates the target brighness state of the light. Note that this does not change the physical
+   * state of the light. Physical state will be updated when transition_to_target_state function is
+   * called.
+   *
+   * Must only be called by the zigbee task.
+   */
   void update_target_brightness(Brightness brightness);
+
+  /**
+   * Updates the target color temperature of the light. Note that this does not change the physical
+   * state of the light. Physical state will be updated when transition_to_target_state function is
+   * called.
+   *
+   * Must only be called by the zigbee task.
+   */
   void update_target_color_temperature(ColorTemperature color_temperature);
 
   /*
-   * Returns the target state and modified_count if the modified_count has changed since the last
-   * call.
+   * Returns the target state and modified_count if the modified_count is not equal to
+   * prev_modified_count. The caller must save the returned modified count after every call and use
+   * it for the next call. This ensures that we don't attempt to report states that have no changes.
    */
   std::optional<std::pair<uint8_t, LightState>> get_modified_count_and_state_if_newer(
       uint8_t prev_modified_count);
 };
 
-/* Provides RAII style access to RTOS mutexes. */
+/* Simple RAII style access to RTOS mutexes. */
 class RTOSMutex {
  public:
   SemaphoreHandle_t mutex_handle;

@@ -44,11 +44,13 @@ void LightsController::lights_task_main_loop() {
   ESP_LOGI(TAG, "%s: Starting Lights Task Main Loop", __FUNCTION__);
 
   while (true) {
+    // Wait indefinitely for signal from the zigbee task.
+    // Any attempt to change the state should signal this handle.
     xSemaphoreTake(signal_sem_handle, portMAX_DELAY);
 
     // Transition all lights to their target state
     for (auto& [ep, light] : ep_to_light) {
-      // Wait 150ms to accumulate any other state changes as ON/OFF and
+      // Wait 300ms to accumulate any other state changes as ON/OFF and
       // brightness changes seem to come back to back.
       vTaskDelay(pdMS_TO_TICKS(300));
       light->transition_to_target_state();

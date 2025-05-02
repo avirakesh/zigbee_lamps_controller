@@ -121,6 +121,7 @@ esp_err_t Light::initialize_gpio() {
   };
 
   ESP_RETURN_ON_ERROR(gpio_config(&cfg), TAG, "Failed to configure GPIO pins");
+  // Set all values to HIGH because the relay board considers HIGH as "relay open"
   gpio_set_level(control_pins.power, 1);
   gpio_set_level(control_pins.color_temperature, 1);
   gpio_set_level(control_pins.brightness_up, 1);
@@ -131,6 +132,10 @@ esp_err_t Light::initialize_gpio() {
 void Light::transition_to_target_state() {
   LightState new_state;
   {
+    // Read the target state with the mutex held to ensure there are no changes while the state is
+    // being read. It is possible that the target_state changes after the mutex is released, but
+    // before the physical state is updated. This is fine, as the next iteration will catch the
+    // current physical state to the updated target state.
     RTOSMutex mutex(mutex_handle);
     new_state = target_state;
   }
