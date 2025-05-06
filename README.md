@@ -6,10 +6,10 @@ making my lights "smart" (i.e. being able to control them via Home Assistant), a
 for any future Zigbee projects I might undertake.
 
 > [!CAUTION]
-> This project is by no means a complete tutorial, or comprehensive sample of
+> This project is by no means a complete tutorial, or a comprehensive sample of
 > `esp-zigbee-lib`. There are plenty of parts of this projects where I stopped experimenting when
 > stuff worked. Readers are encouraged to experiment more and challenge any assumptions made
-> in the project. I am sure there is plenty of room for improvement in this project. If you
+> in the project. I am sure there is plenty of room for improvement in this code. If you
 > do find these improvements, feel free to either open a pull request, or file an Github issue.
 
 ## Hardware
@@ -18,17 +18,18 @@ The code doesn't make any specific assumptions about the hardware, so as long as
 supports your chip, this project should generally work.
 
 But for completeness' sake, here is the specific hardware I used:
-1. [ESP32C6-DevKit V4](https://www.aliexpress.com/item/32850791884.html?spm=a2a1k.gongzhuanliu.1.1)
+1. [ESP32-C6-DevKitC-1-N8](https://a.co/d/01APvgZ)
 2. Floor Lamps: https://a.co/d/ijMNrwh
 3. 4 Relays per lamp remote
 
 Strictly speaking, the board is not connected directly to the lamps, but rather controls the lamps
 via the remote that comes with the lamps. Each button in the remote is hooked up to a relay, each
 of which is controlled by a GPIO pin on the ESP32C6 board. So to turn a particular lamp on or off,
-the esp32c6 simply needs to trigger the GPIO to "press" the power button on the remote using
-the appropriate relay.
+the esp32c6 simply needs to "press" the power button on the proper remote by toggling the GPIO
+attached to the relay that shorts the power button on said remote.
 
-For reference: This is how my esp32c6 is wired:
+For reference, this is how my esp32c6 is wired:
+
 ![ESP32C6 Wiring Diagram](docs/wiring_diagram.png)
 
 ## Software
