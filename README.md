@@ -75,7 +75,7 @@ Do the following in your Home Assistant / Zigbee2MQTT configuration:
    `/config/zigbee2mqtt/external_converters/esp32c6_lamps_controller.js` (or wherever you have your
    external converters directory).
 2. Change the `model` and `vendor` fields in the file to match your device's model and vendor.
-   These are the manufacturer information set in [main.cpp](src/main.cpp).
+   These are the manufacturer information set in [main.cpp](main/main.cpp).
 3. Restart Zigbee2MQTT.
 4. Open network to new devices (Permit Join).
 5. Boot up the esp32c6. If the firmware if running correctly, it should boot in pairing mode and
